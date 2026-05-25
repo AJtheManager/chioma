@@ -1,160 +1,71 @@
 # Deployment Scripts
 
-Automated scripts for deploying Chioma contracts to Stellar testnet.
+Deploy Chioma Soroban contracts to [Stellar testnet](https://developers.stellar.org/docs/build/smart-contracts/getting-started/deploy-to-testnet).
 
-## Scripts
+## Prerequisites
 
-### deploy-testnet.sh
+1. [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli) (`stellar` 23.x)
+2. Rust toolchain (used by `stellar contract build`)
+3. A testnet identity with XLM (Friendbot funds it automatically)
 
-Automated deployment of all contracts to testnet.
-
-**Usage:**
-
-```bash
-./scripts/deploy-testnet.sh
-```
-
-**What it does:**
-
-1. Checks prerequisites (Soroban CLI, Cargo, account balance)
-2. Builds all contracts in release mode
-3. Deploys contracts in correct order
-4. Initializes each contract with proper parameters
-5. Saves contract IDs to `.env.testnet`
-
-**Requirements:**
-
-- Soroban CLI installed
-- Testnet account created and funded
-- Testnet network configured
-- `DEPLOYER_KEY` environment variable set (default: `testnet-deployer`)
-
-**Output:**
-
-- `.env.testnet` file with all contract IDs
-- Console output showing deployment progress
-
-### verify-deployment.sh
-
-Verifies all contracts are deployed and working correctly.
-
-**Usage:**
+## Quick start
 
 ```bash
-./scripts/verify-deployment.sh
-```
-
-**What it does:**
-
-1. Loads contract IDs from `.env.testnet`
-2. Verifies each contract exists on testnet
-3. Tests basic contract functions
-4. Shows contract sizes
-5. Displays network information
-6. Provides summary and next steps
-
-**Requirements:**
-
-- `.env.testnet` file with contract IDs
-- Soroban CLI installed
-- Network connectivity to testnet
-
-**Output:**
-
-- Verification status for each contract
-- Contract sizes
-- Network information
-- Summary of deployment status
-
-## Quick Start
-
-```bash
-# 1. Set up testnet account
-soroban keys generate --name testnet-deployer
-soroban network add --name testnet \
-  --rpc-url https://soroban-testnet.stellar.org:443 \
-  --network-passphrase "Test SDF Network ; September 2015"
-
-# 2. Fund account at https://friendbot.stellar.org/
-
-# 3. Deploy contracts
 cd contract
+
+# Optional: use your existing identity
+export DEPLOYER_KEY=caxton
+
+# Build, deploy all 8 contracts, initialize, write .env.testnet
+chmod +x scripts/deploy-testnet.sh scripts/verify-deployment.sh
 ./scripts/deploy-testnet.sh
 
-# 4. Verify deployment
+# Smoke-test on-chain
 ./scripts/verify-deployment.sh
 ```
 
-## Environment Variables
+### First-time setup (manual)
 
-### Required
+```bash
+stellar keys generate testnet-deployer --network testnet
+stellar keys fund testnet-deployer --network testnet
+```
 
-- `DEPLOYER_KEY` - Soroban key name for deployment (default: `testnet-deployer`)
+## `deploy-testnet.sh`
 
-### Optional
+| Flag | Description |
+|------|-------------|
+| `--skip-build` | Use existing `target/wasm32v1-none/release/*.wasm` |
+| `--skip-fund` | Skip Friendbot funding |
+| `--deploy-only` | Deploy only; skip `initialize` calls |
+| `--init-only` | Initialize from existing `.env.testnet` |
 
-- `NETWORK` - Network name (default: `testnet`)
-- `WASM_DIR` - WASM directory (default: `contract/target/wasm32-unknown-unknown/release`)
+**Environment variables**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEPLOYER_KEY` | `testnet-deployer` | CLI identity that signs txs |
+| `NETWORK` | `testnet` | Network name in CLI config |
+| `PLATFORM_FEE_BPS` | `500` | Chioma `fee_bps` (5%) |
+| `MIN_DISPUTE_VOTES` | `3` | Dispute resolution quorum |
+| `WASM_DIR` | `target/wasm32v1-none/release` | Built WASM location |
+| `ENV_FILE` | `.env.testnet` | Output contract IDs |
+
+**Deploy order:** `user_profile` → `property_registry` → `agent_registry` → `rent_obligation` → `escrow` → `payment` → `dispute_resolution` → `chioma`
+
+**Init order:** same through `payment`, then `chioma`, then `dispute_resolution` (needs `CHIOMA_CONTRACT_ID`).
+
+**Output:** `.env.testnet` with `*_CONTRACT_ID` variables for the frontend/backend.
+
+## `verify-deployment.sh`
+
+Loads `.env.testnet`, checks each contract exists on testnet, and runs read-only `invoke` smoke tests.
 
 ## Troubleshooting
 
-### Script fails to run
+- **Missing WASM:** run `./scripts/deploy-testnet.sh` without `--skip-build`, or `env -u CARGO_TARGET_DIR stellar contract build` from `contract/`.
+- **Insufficient balance:** `stellar keys fund $DEPLOYER_KEY --network testnet`
+- **Init auth errors:** ensure `DEPLOYER_KEY` is the same identity used as `--admin` / `--collector`.
+- **Rate limits:** re-run with `--init-only` after deploy succeeds.
 
-```bash
-# Make scripts executable
-chmod +x scripts/deploy-testnet.sh
-chmod +x scripts/verify-deployment.sh
-```
-
-### Deployment fails
-
-```bash
-# Check account balance
-soroban account balance --source testnet-deployer --network testnet
-
-# Fund at https://friendbot.stellar.org/
-
-# Check network
-soroban network list
-```
-
-### Verification fails
-
-```bash
-# Check .env.testnet exists
-ls -la .env.testnet
-
-# Check contract IDs
-cat .env.testnet
-
-# Verify contract manually
-soroban contract info --id <CONTRACT_ID> --network testnet
-```
-
-## Manual Deployment
-
-If scripts don't work, deploy manually:
-
-```bash
-# Build
-cargo build --release
-
-# Deploy contract
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/<CONTRACT>.wasm \
-  --source testnet-deployer \
-  --network testnet
-
-# Initialize contract
-soroban contract invoke \
-  --id <CONTRACT_ID> \
-  --source testnet-deployer \
-  --network testnet \
-  -- initialize --admin <ADMIN_KEY>
-```
-
-## Support
-
-- See `TESTNET_QUICKSTART.md` for quick start
-- See `docs/deployment/TESTNET_DEPLOYMENT.md` for detailed guide
-- See `DEPLOYMENT_CHECKLIST.md` for checklist
+See also: [docs/deployment/TESTNET_DEPLOYMENT.md](../docs/deployment/TESTNET_DEPLOYMENT.md)

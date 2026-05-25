@@ -1,239 +1,305 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# Deploy all Chioma Soroban contracts to Stellar testnet.
+# Based on: https://developers.stellar.org/docs/build/smart-contracts/getting-started/deploy-to-testnet
+#
+# Usage (from contract/):
+#   ./scripts/deploy-testnet.sh
+#
+# Options:
+#   --skip-build     Use existing WASM artifacts
+#   --skip-fund      Do not request Friendbot funding
+#   --deploy-only    Deploy WASM; skip initialization
+#   --init-only      Initialize using IDs in .env.testnet (skip deploy)
+#
+# Environment:
+#   DEPLOYER_KEY     Stellar identity name (default: testnet-deployer)
+#   NETWORK          Network name (default: testnet)
+#   PLATFORM_FEE_BPS Default 500
+#   MIN_DISPUTE_VOTES Default 3
 
-# Testnet Deployment Script
-# Deploys all Chioma contracts to Stellar testnet
+set -euo pipefail
 
-set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTRACT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$CONTRACT_ROOT"
 
-# Colors for output
+NETWORK="${NETWORK:-testnet}"
+DEPLOYER_KEY="${DEPLOYER_KEY:-testnet-deployer}"
+WASM_DIR="${WASM_DIR:-target/wasm32v1-none/release}"
+ENV_FILE="${ENV_FILE:-.env.testnet}"
+PLATFORM_FEE_BPS="${PLATFORM_FEE_BPS:-500}"
+MIN_DISPUTE_VOTES="${MIN_DISPUTE_VOTES:-3}"
+ALIAS_PREFIX="${ALIAS_PREFIX:-chioma_testnet}"
+
+SKIP_BUILD=0
+SKIP_FUND=0
+DEPLOY_ONLY=0
+INIT_ONLY=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --skip-build) SKIP_BUILD=1 ;;
+    --skip-fund) SKIP_FUND=1 ;;
+    --deploy-only) DEPLOY_ONLY=1 ;;
+    --init-only) INIT_ONLY=1 ;;
+    -h|--help)
+      sed -n '2,20p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuration
-NETWORK="testnet"
-DEPLOYER_KEY="${DEPLOYER_KEY:-testnet-deployer}"
-WASM_DIR="contract/target/wasm32-unknown-unknown/release"
-ENV_FILE=".env.testnet"
+log() { echo -e "${GREEN}[*]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+err() { echo -e "${RED}[!]${NC} $*" >&2; }
 
-# Contract order (dependencies)
+# Deploy order (no cross-contract WASM deps)
 CONTRACTS=(
-  "user_profile"
-  "property_registry"
-  "agent_registry"
-  "rent_obligation"
-  "escrow"
-  "payment"
-  "dispute_resolution"
-  "chioma"
+  user_profile
+  property_registry
+  agent_registry
+  rent_obligation
+  escrow
+  payment
+  dispute_resolution
+  chioma
 )
 
-# Function to print colored output
-print_status() {
-  echo -e "${GREEN}[*]${NC} $1"
+# Init order: chioma before dispute_resolution
+INIT_CONTRACTS=(
+  user_profile
+  property_registry
+  agent_registry
+  rent_obligation
+  escrow
+  payment
+  chioma
+  dispute_resolution
+)
+
+env_var_for() {
+  local contract="$1"
+  echo "${contract^^}_CONTRACT_ID" | tr '-' '_'
 }
 
-print_error() {
-  echo -e "${RED}[!]${NC} $1"
-}
-
-print_warning() {
-  echo -e "${YELLOW}[!]${NC} $1"
-}
-
-# Check prerequisites
-check_prerequisites() {
-  print_status "Checking prerequisites..."
-  
-  if ! command -v soroban &> /dev/null; then
-    print_error "Soroban CLI not found. Install with: cargo install soroban-cli"
+require_cli() {
+  if ! command -v stellar >/dev/null 2>&1; then
+    err "Stellar CLI not found. Install: https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli"
     exit 1
   fi
-  
-  if ! command -v cargo &> /dev/null; then
-    print_error "Cargo not found. Install Rust from https://rustup.rs/"
-    exit 1
-  fi
-  
-  # Check account balance
-  BALANCE=$(soroban account balance --source "$DEPLOYER_KEY" --network "$NETWORK" 2>/dev/null || echo "0")
-  if [ "$BALANCE" = "0" ]; then
-    print_error "Account has no balance. Fund at: https://friendbot.stellar.org/"
-    exit 1
-  fi
-  
-  print_status "Account balance: $BALANCE XLM"
 }
 
-# Build contracts
+ensure_identity() {
+  if ! stellar keys ls 2>/dev/null | grep -qx "$DEPLOYER_KEY"; then
+    log "Creating identity '$DEPLOYER_KEY' on $NETWORK..."
+    stellar keys generate "$DEPLOYER_KEY" --network "$NETWORK"
+  fi
+}
+
+fund_identity() {
+  if [[ "$SKIP_FUND" -eq 1 ]]; then
+    return 0
+  fi
+  log "Funding '$DEPLOYER_KEY' via Friendbot (if needed)..."
+  stellar keys fund "$DEPLOYER_KEY" --network "$NETWORK" || warn "Friendbot funding skipped or failed; ensure the account has XLM"
+}
+
 build_contracts() {
-  print_status "Building contracts in release mode..."
-  cd contract
-  cargo build --release
-  cd ..
-  print_status "Build complete"
+  if [[ "$SKIP_BUILD" -eq 1 ]]; then
+    log "Skipping build (--skip-build)"
+    return 0
+  fi
+  log "Building contracts (stellar contract build)..."
+  # Cursor sandbox sets CARGO_TARGET_DIR; use the project target for reproducible paths.
+  env -u CARGO_TARGET_DIR stellar contract build
+  log "Build complete"
 }
 
-# Deploy a single contract
+admin_address() {
+  stellar keys public-key "$DEPLOYER_KEY"
+}
+
+parse_contract_id() {
+  # Deploy output ends with the contract id (C...).
+  grep -Eo 'C[A-Z2-7]{55}' | tail -1
+}
+
 deploy_contract() {
-  local contract=$1
-  local wasm_file="$WASM_DIR/${contract}.wasm"
-  
-  if [ ! -f "$wasm_file" ]; then
-    print_error "WASM file not found: $wasm_file"
+  local contract="$1"
+  local wasm="$WASM_DIR/${contract}.wasm"
+  local alias="${ALIAS_PREFIX}_${contract}"
+
+  if [[ ! -f "$wasm" ]]; then
+    err "WASM not found: $wasm (run build first or check WASM_DIR)"
     return 1
   fi
-  
-  print_status "Deploying $contract..."
-  
-  CONTRACT_ID=$(soroban contract deploy \
-    --wasm "$wasm_file" \
-    --source "$DEPLOYER_KEY" \
-    --network "$NETWORK" 2>&1 | grep -oP 'Contract ID: \K[A-Z0-9]+' || echo "")
-  
-  if [ -z "$CONTRACT_ID" ]; then
-    print_error "Failed to deploy $contract"
+
+  log "Deploying $contract..."
+  local output
+  output="$(
+    stellar contract deploy \
+      --wasm "$wasm" \
+      --source-account "$DEPLOYER_KEY" \
+      --network "$NETWORK" \
+      --alias "$alias" 2>&1
+  )" || {
+    err "Deploy failed for $contract"
+    echo "$output" >&2
+    return 1
+  }
+
+  local contract_id
+  contract_id="$(echo "$output" | parse_contract_id)"
+  if [[ -z "$contract_id" ]]; then
+    err "Could not parse contract id for $contract"
+    echo "$output" >&2
     return 1
   fi
-  
-  print_status "$contract deployed: $CONTRACT_ID"
-  
-  # Save to env file
-  CONTRACT_VAR="${contract^^}_CONTRACT_ID"
-  CONTRACT_VAR="${CONTRACT_VAR//-/_}"
-  echo "${CONTRACT_VAR}=${CONTRACT_ID}" >> "$ENV_FILE"
-  
-  return 0
+
+  log "$contract deployed: $contract_id (alias: $alias)"
+  local var
+  var="$(env_var_for "$contract")"
+  echo "${var}=${contract_id}" >>"$ENV_FILE"
 }
 
-# Initialize contract
+invoke_write() {
+  stellar contract invoke \
+    --id "$1" \
+    --source-account "$DEPLOYER_KEY" \
+    --network "$NETWORK" \
+    --send yes \
+    -- "${@:2}"
+}
+
 initialize_contract() {
-  local contract=$1
-  local contract_id=$2
-  local admin=${3:-$DEPLOYER_KEY}
-  
-  print_status "Initializing $contract..."
-  
-  case $contract in
-    "user_profile"|"property_registry"|"agent_registry")
-      soroban contract invoke \
-        --id "$contract_id" \
-        --source "$DEPLOYER_KEY" \
-        --network "$NETWORK" \
-        -- initialize \
-        --admin "$admin"
+  local contract="$1"
+  local contract_id="$2"
+  local admin="$3"
+
+  log "Initializing $contract ($contract_id)..."
+
+  case "$contract" in
+    user_profile|property_registry|agent_registry)
+      invoke_write "$contract_id" initialize --admin "$admin"
       ;;
-    "rent_obligation")
-      soroban contract invoke \
-        --id "$contract_id" \
-        --source "$DEPLOYER_KEY" \
-        --network "$NETWORK" \
-        -- initialize
+    rent_obligation)
+      invoke_write "$contract_id" initialize
       ;;
-    "escrow")
-      soroban contract invoke \
-        --id "$contract_id" \
-        --source "$DEPLOYER_KEY" \
-        --network "$NETWORK" \
-        -- initialize_admin \
-        --admin "$admin"
+    escrow)
+      invoke_write "$contract_id" initialize_admin --admin "$admin"
       ;;
-    "payment")
-      soroban contract invoke \
-        --id "$contract_id" \
-        --source "$DEPLOYER_KEY" \
-        --network "$NETWORK" \
-        -- set_platform_fee_collector \
-        --collector "$admin"
+    payment)
+      invoke_write "$contract_id" set_platform_fee_collector --collector "$admin"
       ;;
-    "dispute_resolution")
-      # Get chioma contract ID from env
-      source "$ENV_FILE" 2>/dev/null || true
-      CHIOMA_ID="${CHIOMA_CONTRACT_ID}"
-      if [ -z "$CHIOMA_ID" ]; then
-        print_warning "Chioma contract ID not found. Skipping dispute_resolution init."
-        return 0
+    chioma)
+      invoke_write "$contract_id" initialize \
+        --admin "$admin" \
+        --config "{\"fee_bps\": ${PLATFORM_FEE_BPS}, \"fee_collector\": \"${admin}\", \"paused\": false}"
+      ;;
+    dispute_resolution)
+      # shellcheck disable=SC1090
+      source "$ENV_FILE"
+      if [[ -z "${CHIOMA_CONTRACT_ID:-}" ]]; then
+        err "CHIOMA_CONTRACT_ID missing; cannot initialize dispute_resolution"
+        return 1
       fi
-      soroban contract invoke \
-        --id "$contract_id" \
-        --source "$DEPLOYER_KEY" \
-        --network "$NETWORK" \
-        -- initialize \
+      invoke_write "$contract_id" initialize \
         --admin "$admin" \
-        --min_votes_required 3 \
-        --chioma_contract "$CHIOMA_ID"
+        --min_votes_required "$MIN_DISPUTE_VOTES" \
+        --chioma_contract "$CHIOMA_CONTRACT_ID"
       ;;
-    "chioma")
-      soroban contract invoke \
-        --id "$contract_id" \
-        --source "$DEPLOYER_KEY" \
-        --network "$NETWORK" \
-        -- initialize \
-        --admin "$admin" \
-        --config '{"fee_bps": 500, "paused": false}'
+    *)
+      warn "No initializer for $contract"
+      return 0
       ;;
   esac
-  
-  print_status "$contract initialized"
+
+  log "$contract initialized"
 }
 
-# Main deployment flow
+write_env_header() {
+  local admin="$1"
+  cat >"$ENV_FILE" <<EOF
+# Chioma testnet deployment — $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+DEPLOYER_KEY=${DEPLOYER_KEY}
+NETWORK=${NETWORK}
+ADMIN_ADDRESS=${admin}
+PLATFORM_FEE_BPS=${PLATFORM_FEE_BPS}
+MIN_DISPUTE_VOTES=${MIN_DISPUTE_VOTES}
+EOF
+}
+
 main() {
-  print_status "Starting testnet deployment..."
-  
-  # Check prerequisites
-  check_prerequisites
-  
-  # Build contracts
-  build_contracts
-  
-  # Clear env file
-  > "$ENV_FILE"
-  
-  # Get admin address
-  ADMIN=$(soroban keys show "$DEPLOYER_KEY" 2>/dev/null | grep "Public Key" | awk '{print $NF}')
-  if [ -z "$ADMIN" ]; then
-    print_error "Could not get admin address"
-    exit 1
-  fi
-  
-  print_status "Admin address: $ADMIN"
-  
-  # Deploy all contracts
-  for contract in "${CONTRACTS[@]}"; do
-    if ! deploy_contract "$contract"; then
-      print_error "Deployment failed at $contract"
+  require_cli
+  ensure_identity
+  fund_identity
+
+  local admin
+  admin="$(admin_address)"
+  log "Deployer: $DEPLOYER_KEY ($admin)"
+  log "Network: $NETWORK"
+
+  if [[ "$INIT_ONLY" -eq 0 ]]; then
+    build_contracts
+
+    for wasm in "${CONTRACTS[@]}"; do
+      if [[ ! -f "$WASM_DIR/${wasm}.wasm" ]]; then
+        err "Missing $WASM_DIR/${wasm}.wasm"
+        exit 1
+      fi
+    done
+
+    write_env_header "$admin"
+
+    for contract in "${CONTRACTS[@]}"; do
+      deploy_contract "$contract"
+      sleep 1
+    done
+
+    log "All contracts deployed. IDs written to $ENV_FILE"
+  else
+    if [[ ! -f "$ENV_FILE" ]]; then
+      err "$ENV_FILE not found. Run deploy first or create it from .env.testnet.example"
       exit 1
     fi
-    sleep 2  # Rate limiting
-  done
-  
-  print_status "All contracts deployed"
-  
-  # Initialize contracts (in reverse order for dependencies)
-  for contract in "${CONTRACTS[@]}"; do
-    CONTRACT_VAR="${contract^^}_CONTRACT_ID"
-    CONTRACT_VAR="${CONTRACT_VAR//-/_}"
-    CONTRACT_ID=$(grep "^${CONTRACT_VAR}=" "$ENV_FILE" | cut -d= -f2)
-    
-    if [ -z "$CONTRACT_ID" ]; then
-      print_error "Contract ID not found for $contract"
-      continue
+    log "Init-only mode using $ENV_FILE"
+  fi
+
+  if [[ "$DEPLOY_ONLY" -eq 1 ]]; then
+    log "Skipping initialization (--deploy-only)"
+    exit 0
+  fi
+
+  for contract in "${INIT_CONTRACTS[@]}"; do
+    local var id
+    var="$(env_var_for "$contract")"
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    id="${!var:-}"
+    if [[ -z "$id" ]]; then
+      err "Missing $var in $ENV_FILE"
+      exit 1
     fi
-    
-    if ! initialize_contract "$contract" "$CONTRACT_ID" "$ADMIN"; then
-      print_warning "Initialization failed for $contract, continuing..."
-    fi
-    sleep 2  # Rate limiting
+    initialize_contract "$contract" "$id" "$admin" || {
+      err "Initialization failed for $contract"
+      exit 1
+    }
+    sleep 1
   done
-  
-  print_status "Deployment complete!"
-  print_status "Contract IDs saved to: $ENV_FILE"
+
+  log "Deployment and initialization complete."
   echo ""
-  echo "Contract IDs:"
   cat "$ENV_FILE"
 }
 
-# Run main function
 main "$@"
