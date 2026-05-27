@@ -65,6 +65,7 @@ The API will be available at `http://localhost:5000/api` and Swagger UI at `http
 | Document                                                        | Summary                                                   |
 | --------------------------------------------------------------- | --------------------------------------------------------- |
 | [API Overview](./api/api-documentation.md)                      | Base URL, auth, all endpoint groups                       |
+| [Usage Guide](./api/USAGE_GUIDE.md)                             | Step-by-step integration walkthrough with curl examples |
 | [API Standards](./api/API-STANDARDS.md)                         | Annotation conventions, request/response formats          |
 | [Documentation Standards](./DOCUMENTATION-STANDARDS.md)         | README, code comments, API docs, architecture standards   |
 | [Authentication Guide](./api/AUTHENTICATION.md)                 | JWT flow, SEP-0010, refresh tokens                        |
@@ -159,6 +160,7 @@ Chioma supports dual authentication: **JWT (email/password)** and **Stellar SEP-
 
 | Document                                                     | Summary                         |
 | ------------------------------------------------------------ | ------------------------------- |
+| [Dead Letter Queues](./queues/DEAD_LETTER_QUEUES.md)         | Failed job archival and retry   |
 | [Bull Queues](./queues/BULL_QUEUES_IMPLEMENTATION.md)        | Queue setup, workers, job types |
 | [Implementation Summary](./queues/IMPLEMENTATION_SUMMARY.md) | Summary of queue usage          |
 
@@ -172,6 +174,7 @@ Chioma supports dual authentication: **JWT (email/password)** and **Stellar SEP-
 | [Deployment Checklist](./deployment/DEPLOYMENT_CHECKLIST.md)     | Pre-deploy and post-deploy safety checklist                             |
 | [Production Setup](./deployment/PRODUCTION_SETUP.md)             | Environment config, secrets, health checks                              |
 | [Monitoring & Alerting](./deployment/MONITORING_AND_ALERTING.md) | Metrics collection, alert configuration, dashboards, alert response     |
+| [Error Notification & Escalation](./deployment/ERROR_NOTIFICATION_AND_ESCALATION.md) | Alert webhooks, email/Slack delivery, escalation tiers |
 | [Backup & Recovery](./deployment/BACKUP_AND_RECOVERY.md)         | Backup strategies, verification, recovery procedures, testing           |
 | [Release Management](./deployment/RELEASE_MANAGEMENT.md)         | Release planning, versioning, release notes, deployment, rollback       |
 
