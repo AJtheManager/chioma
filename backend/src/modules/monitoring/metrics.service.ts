@@ -50,6 +50,23 @@ export class MetricsService {
     this.metrics.set('database_connections', count);
   }
 
+  setDatabasePoolUsage(active: number, idle: number, max: number, waiting: number) {
+    this.metrics.set('database_pool_active', active);
+    this.metrics.set('database_pool_idle', idle);
+    this.metrics.set('database_pool_max', max);
+    this.metrics.set('database_pool_waiting', waiting);
+  }
+
+  setDatabaseSize(bytes: number) {
+    this.metrics.set('database_size_bytes', bytes);
+  }
+
+  setQueryMetrics(avgTimeMs: number, tps: number, cacheHitRatio: number) {
+    this.metrics.set('database_query_avg_time_ms', avgTimeMs);
+    this.metrics.set('database_tps', tps);
+    this.metrics.set('database_cache_hit_ratio', cacheHitRatio);
+  }
+
   recordDatabaseQuery(queryType: string, duration: number) {
     const key = `db_query_${queryType}`;
     this.recordHistogram(key, duration);
