@@ -114,6 +114,17 @@ export default function UserDashboardOverview() {
   const leaseProgressPct = leaseMonthsTotal > 0
     ? Math.min(100, Math.round((leaseMonthsElapsed / leaseMonthsTotal) * 100))
     : 60;
+  const currentYear = new Date().getFullYear();
+  const totalPaidThisYear = apiPayments
+    .filter((p) => {
+      const year = p.createdAt ? new Date(p.createdAt).getFullYear() : 0;
+      return year === currentYear && p.status?.toLowerCase() === 'completed';
+    })
+    .reduce((sum, p) => sum + (p.amount ?? 0), 0);
+  const rentPaidDisplay = totalPaidThisYear > 0
+    ? `$${totalPaidThisYear.toLocaleString()}`
+    : '$8,400';
+
   const nextPaymentAmount = activeAgreement?.monthlyRent
     ? `${activeAgreement.monthlyRent.toLocaleString()}`
     : mockAgreements[0].amount;
