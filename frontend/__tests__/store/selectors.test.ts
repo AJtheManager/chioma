@@ -37,6 +37,7 @@ const authState: AuthStore = {
   loading: false,
   walletAddress: null,
   login: async () => ({ success: true }),
+  register: async () => ({ success: true }),
   logout: async () => {},
   setTokens: () => {},
   setWalletAddress: () => {},
