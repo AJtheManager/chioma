@@ -24,7 +24,6 @@ describe('User Profile Update Integration', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let accessToken: string;
-  let userId: string;
 
   /** Register + login a fresh user and return its access token. */
   async function createAndLoginUser(
@@ -100,7 +99,6 @@ describe('User Profile Update Integration', () => {
 
     const result = await createAndLoginUser('profile.tester@chioma.local');
     accessToken = result.accessToken;
-    userId = result.userId;
   }, 90000);
 
   afterAll(async () => {
